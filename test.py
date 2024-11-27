@@ -1,132 +1,163 @@
 import cv2
 import numpy as np
-import tensorflow as tf
+import torch
 from deep_sort_realtime.deepsort_tracker import DeepSort
 import mediapipe as mp
 
-# Initialize the YOLO model (you can also use SSD or Faster R-CNN in a similar manner)
-# Load YOLO weights and configuration file
-yolo_net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s').to(device)
+yolo_model.classes = [0, 32]  # Track only people and the ball
 
-# Load COCO class labels
-with open("coco.names", "r") as f:
-    labels = [line.strip() for line in f.readlines()]
-
-# Get YOLO output layer names
-layer_names = yolo_net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in yolo_net.getUnconnectedOutLayers()]
-
-# Initialize DeepSORT tracker
-deepsort = DeepSort(max_age=30, n_init=3, nn_budget=100)
-
-# Initialize MediaPipe Pose (PoseNet alternative in Python)
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
+mp_pose = mp.solutions.pose
 
-# Open the video file
-cap = cv2.VideoCapture("Test_Tackle.mp4")
+deepsort = DeepSort()
 
-if not cap.isOpened():
-    print("Error: Could not open video.")
-    exit()
+video_path = "Test_Tackle.mp4"
 
-# Loop through video frames
+last_ball_center = None  # Store last known ball center
+last_ball_bbox = None  # Store last known ball bounding box
+
+# Get the dimensions of the video
+cap = cv2.VideoCapture(video_path)
+while cap.isOpened():
+    ret, frame = cap.read()
+    h, w, _ = frame.shape
+    size = (w, h)
+    print(size)
+    break
+cap.release()
+
+cap = cv2.VideoCapture(video_path)
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
-    # Get the shape of the frame
-    height, width, channels = frame.shape
+    # Recolor Feed from RGB to BGR
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image.flags.writeable = False
 
-    # Prepare the frame for YOLO model
-    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
-    yolo_net.setInput(blob)
+    with torch.no_grad():
+        result = yolo_model(image)
 
-    # Forward pass through the network
-    outs = yolo_net.forward(output_layers)
+    # Recolor image back to BGR for rendering
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    # Process YOLO output
-    class_ids = []
-    confidences = []
-    boxes = []
+    # This array will contain crops of images in case we need them
+    detections = []
+    ball_bbox = None
+    player_bboxes = []
 
-    # Loop through the detected objects
-    for out in outs:
-        for detection in out:
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if confidence > 0.5:  # Threshold for detection confidence
-                center_x = int(detection[0] * width)
-                center_y = int(detection[1] * height)
-                w = int(detection[2] * width)
-                h = int(detection[3] * height)
+    for (xmin, ymin, xmax, ymax, confidence, clas) in result.xyxy[0].tolist():
+        if clas == 0:  # Person class
+            player_bboxes.append((xmin, ymin, xmax, ymax))
+            detections.append([xmin, ymin, xmax, ymax, confidence, clas])
+        elif clas == 32:
+            ball_bbox = (xmin, ymin, xmax, ymax)
+            detections.append([xmin, ymin, xmax, ymax, confidence, clas])
+            center_x = int((xmin + xmax) / 2)
+            center_y = int((ymin + ymax) / 2)
+            radius = int(((xmax - xmin) + (ymax - ymin)) / 4)
+            cv2.circle(image, (center_x, center_y), radius, (0, 255, 0), 2)
 
-                # Rectangle coordinates
-                x = int(center_x - w / 2)
-                y = int(center_y - h / 2)
+    if not ball_bbox and last_ball_center:
+        # Use last known ball position and approximate its bounding box
+        ball_bbox = (
+            last_ball_center[0] - 20, last_ball_center[1] - 20,  # xmin, ymin
+            last_ball_center[0] + 20, last_ball_center[1] + 20  # xmax, ymax
+        )
 
-                boxes.append([x, y, w, h])
-                confidences.append(float(confidence))
-                class_ids.append(class_id)
+    detection_list = []
+    if detections:
+        for detection in detections:
+            if len(detection) == 6:  # Ensure it has 6 elements: [xmin, ymin, xmax, ymax, confidence, class]
+                xmin, ymin, xmax, ymax, confidence, detection_class = detection
+                # Convert to DeepSORT format: [left, top, width, height]
+                left = xmin
+                top = ymin
+                width = xmax - xmin
+                height = ymax - ymin
+                # Append in the required format: ([left, top, width, height], confidence, detection_class)
+                detection_list.append(([left, top, width, height], confidence, detection_class))
 
-    # Apply Non-Maximum Suppression (NMS) to remove redundant boxes
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.5, nms_threshold=0.4)
+    # Track objects
+    tracks = deepsort.update_tracks(detection_list, frame)
 
-    # Draw the bounding boxes for the detected persons
-    if len(indexes) > 0:
-        detections = []
-        for i in indexes.flatten():
-            x, y, w, h = boxes[i]
-            confidence = confidences[i]
-            detection_class = class_ids[i]
+    # Calculate the center of the ball if it was detected
+    if ball_bbox:
+        ball_center = ((ball_bbox[0] + ball_bbox[2]) / 2, (ball_bbox[1] + ball_bbox[3]) / 2)
 
-            # Ensure the detection is in the correct format: [x1, y1, x2, y2, confidence]
-            detection = ([x, y, w, h], confidence, detection_class)
-            detections.append(detection)
+        # Store the last known ball center
+        last_ball_center = ball_center
+        last_ball_bbox = ball_bbox
 
-        # Update the tracker with the detections and the current frame
-        tracks = deepsort.update_tracks(detections, frame=frame)
+        # Initialize list to store distances of players from the ball
+        player_distances = []
 
-        # Draw bounding boxes for each track
+        # Filter closest two players from detection_list
         for track in tracks:
-            if not track.is_confirmed():
-                continue
+            if track.is_confirmed():  # Only consider confirmed tracks
+                track_bbox = track.to_tlbr()  # Get bounding box of the track (xmin, ymin, xmax, ymax)
+                track_center = ((track_bbox[0] + track_bbox[2]) / 2, (track_bbox[1] + track_bbox[3]) / 2)
+
+                # Calculate Euclidean distance from track (player) to ball
+                distance = np.sqrt((ball_center[0] - track_center[0]) ** 2 + (ball_center[1] - track_center[1]) ** 2)
+                player_distances.append((distance, track))
+
+        # Sort players by distance to ball (ascending)
+        player_distances.sort(key=lambda x: x[0])
+
+        # Get the 2 closest players (smallest distances)
+        closest_players = player_distances[:2]
+
+        # Draw bounding boxes for the two closest players and process pose detection
+        for _, track in closest_players:
+            track_bbox = track.to_tlbr()
             track_id = track.track_id
-            ltrb = track.to_ltrb()  # Convert to left, top, right, bottom coordinates
-            # Ensure that ltrb contains 4 values: [left, top, right, bottom]
-            if len(ltrb) == 4:
-                x1, y1, x2, y2 = map(int, ltrb)  # Convert values to integers for cv2.rectangle()
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f'ID {track_id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            # Draw bounding box around the player
+            cv2.rectangle(frame, (int(track_bbox[0]), int(track_bbox[1])),
+                          (int(track_bbox[2]), int(track_bbox[3])), (0, 255, 0), 2)
+            cv2.putText(frame, f"ID: {track_id}",
+                        (int(track_bbox[0]), int(track_bbox[1] - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # Use PoseNet (via MediaPipe) to detect keypoints
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(frame_rgb)
+            # Crop the player image for pose detection (ensure it's within valid frame bounds)
+            player_crop = frame[int(track_bbox[1]):int(track_bbox[3]), int(track_bbox[0]):int(track_bbox[2])]
 
-        # Check if any pose landmarks were detected
-        if results.pose_landmarks:
-            # Iterate through the detected pose landmarks
-            for landmark in results.pose_landmarks.landmark:
-                # Get the (x, y, z) coordinates of the landmark
-                x = int(landmark.x * width)
-                y = int(landmark.y * height)
+            if player_crop.size == 0:
+                continue
 
-                # Draw a circle for each detected landmark
-                cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+            # Initialize Pose detector
+            with mp_pose.Pose(min_detection_confidence=0.3, min_tracking_confidence=0.3) as pose:
+                pose_results = pose.process(cv2.cvtColor(player_crop, cv2.COLOR_BGR2RGB))
 
-            # Optionally, you can draw the pose skeleton for visualization
-            mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                # Debugging: Check if pose landmarks are detected
+                if pose_results.pose_landmarks:
+                    print(f"Pose landmarks detected for Track ID: {track_id}")
 
-    # Display the frame with detections
-    cv2.imshow("YOLO Detection & Pose Estimation", frame)
+                    # Draw landmarks on the player crop image (original frame)
+                    mp_drawing.draw_landmarks(
+                        frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                        mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
+                        mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
+                    )
+                else:
+                    print(f"No pose detected for Track ID: {track_id}")
 
-    # Exit the loop if the user presses 'q'
+    # Optionally, also draw the ball's bounding box if it was detected
+    if ball_bbox:
+        cv2.rectangle(frame, (int(ball_bbox[0]), int(ball_bbox[1])),
+                      (int(ball_bbox[2]), int(ball_bbox[3])), (0, 0, 255), 2)
+
+    # Show the frame with bounding boxes and pose landmarks
+    cv2.imshow("Pose Detection with YOLOv5", frame)
+
+    # Exit loop if the user presses the 'q' key
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# Release resources
 cap.release()
 cv2.destroyAllWindows()
