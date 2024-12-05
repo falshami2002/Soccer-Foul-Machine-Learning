@@ -5,11 +5,9 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="cb49126a-dea4-4d9a-af07-203ad867f46f" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/find_closest_moment.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/SoccerFoulML.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/SoccerFoulML.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/test.py" beforeDir="false" afterPath="$PROJECT_DIR$/test.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/find_closest_moment.py" beforeDir="false" afterPath="$PROJECT_DIR$/find_closest_moment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/player_and_ball_detection.py" beforeDir="false" afterPath="$PROJECT_DIR$/player_and_ball_detection.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

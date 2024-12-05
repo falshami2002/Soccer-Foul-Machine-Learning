@@ -40,9 +40,9 @@ def find_closest_moment_with_ids(video_path):
         # Process detections and prepare for DeepSORT
         detections = []
         for (xmin, ymin, xmax, ymax, confidence, clas) in result.xyxy[0].tolist():
-            if clas == 0 and confidence > 0.9:  # Person class
+            if clas == 0 and confidence > 0.8:  # Person class
                 detections.append([xmin, ymin, xmax, ymax, confidence, 0])
-            elif clas == 32 and confidence > 0.9:  # Ball class
+            elif clas == 32 and confidence > 0.8:  # Ball class
                 ball_center = ((xmin + xmax) / 2, (ymin + ymax) / 2)
 
         detection_list = []
@@ -121,7 +121,9 @@ def track_players_by_ids(video_path, closest_frame, closest_player_ids, backtrac
     starting_frame = 0
     if closest_frame - backtrack_frames > starting_frame:
         starting_frame = closest_frame - backtrack_frames
-    ending_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+    ending_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if closest_frame + backtrack_frames < ending_frame:
+        ending_frame = 446
     print(starting_frame, ending_frame)
 
     for frame_num in range(ending_frame, starting_frame, -5):
@@ -142,9 +144,9 @@ def track_players_by_ids(video_path, closest_frame, closest_player_ids, backtrac
 
         detections = []
         for (xmin, ymin, xmax, ymax, confidence, clas) in result.xyxy[0].tolist():
-            if clas == 0 and confidence > 0.9:  # Person class
+            if clas == 0 and confidence > 0.8:  # Person class
                 detections.append([xmin, ymin, xmax, ymax, confidence, 0])
-            elif clas == 32 and confidence > 0.9:  # Ball class
+            elif clas == 32 and confidence > 0.8:  # Ball class
                 ball_center = ((xmin + xmax) / 2, (ymin + ymax) / 2)
 
         detection_list = []
